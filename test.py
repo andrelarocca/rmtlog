@@ -1,12 +1,19 @@
 import sys
 import struct
 
-def teste():
-	return 1, 2
-
-input_file = open(sys.argv[1], "rb")
+f = open(sys.argv[1], "rb")
 #output_file = open(sys.argv[2], "wb")
 
+
+frame = "\xDC\xC0\x23\xC2"
+byte = f.read(1)
+while byte:
+	frame += byte
+	byte = f.read(1)	
+
+print frame
+
+"""
 
 while True:
 	buf = input_file.read(16)
@@ -36,7 +43,6 @@ while True:
 	#(a,) = struct.unpack("I", a)
 	#print a
 
-"""
 while True:
 	buf = input_file.read(16)
 	if not buf: break;

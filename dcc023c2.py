@@ -1,26 +1,24 @@
 #!/usr/bin/env python
 
-#########################################
-#              Redes - TP1              #
-#                                       # 
-# Autores: Joao Francisco B. S. Martins #
-#          Vitor Jorge                  #
-#                                       # 
-# Matriculas: 2013007498                #
-#             2013007---                #
-#########################################
+###########################################
+#               Redes - TP1               #
+#                                         # 
+# Autores: Joao Francisco B. S. Martins   #
+#          Vitor Bernardo Rodrigues Jorge #                 
+#                                         # 
+# Matriculas: 2013007498                  #
+#             2013007803                  #
+###########################################
 
 """ TODO
  - Separar em main e lib dccnet
- - Checar se socket.rcv(0) buga
- - Checar se usar o mesmo socket para aceitar a conexao buga
  - Talvez tenhamos que fazer loop para receber em receive_frame
+ - Detectar fechamento de socket
 """
 
 """ DUVIDAS
- - ACK tem chksum?
- - Tenho que fazer pack do payload? Checar exemplo da spec
  - Socket passivo tem que morrer ou continua esperando novas conexoes? SIM
+ - Checar se socket.rcv(0) buga - NAO BUGA, retorna ""
 """
 
 import sys
@@ -33,7 +31,9 @@ def carry_around_add(a, b):
 	return(c &0xffff)+(c >>16)
 
 def checksum(msg):
-	s =0
+	if len(msg) & 1:
+		msg += "\x00"
+	s = 0
 	for i in range(0, len(msg),2):
 		w = ord(msg[i])+(ord(msg[i+1])<<8)
 		s = carry_around_add(s, w)
@@ -41,19 +41,19 @@ def checksum(msg):
 
 
 def create_frame(input_file, max_payload_length, frame_id, is_ack):
+	print "Creating frame", frame_id, ". Is it ack?", is_ack
+
 	SYNC = "\xDC\xC0\x23\xC2"
 	payload = ""
 	payload_length = 0
-	is_length_odd = 0 # Even as default
 	is_last = False
-	flags = 64  # ACK flag
+	flags = 128  # ACK flag
 
 	if not is_ack:
 		payload = input_file.read(max_payload_length)
 		payload_length = len(payload)
-		is_length_odd = payload_length % 2
 		is_last = True if (payload_length < max_payload_length) else False
-		flags = 128 if is_last else 0 
+		flags = 64 if is_last else 0 
 
 	payload_length = struct.pack(">H", payload_length)
 	frame_id = struct.pack(">B", frame_id)
@@ -62,13 +62,21 @@ def create_frame(input_file, max_payload_length, frame_id, is_ack):
 	frame = SYNC + SYNC + "\x00\x00" + payload_length + \
 			frame_id + flags + payload
 
-	if is_length_odd:  # Odd number of bytes
-		frame += "\x00"
+	print "Created frame without checksum:" ,
+	for i in frame:
+		print ord(i),
+
+	print "Checksum:", checksum(frame)
 
 	chksum = struct.pack(">H", checksum(frame))
 
 	frame = SYNC + SYNC + chksum + payload_length + \
 			frame_id + flags + payload
+
+	print "Created frame with checksum:   " ,
+	for i in frame:
+		print ord(i),
+	print
 
 	return frame, is_last
 
@@ -77,42 +85,55 @@ def send_frame(dcc_socket, frame):
 	dcc_socket.sendall(frame)
 
 def receive_header(dcc_socket):
-	header = [0xdc, 0xc0, 0x23, 0xc2, 0xdc, 0xc0, 0x23, 0xc2]
+	header = "\xDC\xC0\x23\xC2\xDC\xC0\x23\xC2"
 	state  = 0
 
 	while state < 8:
-		if dcc_socket.recv(1) == header[state]:
-			state += 1;
-		else:
-			return False
+		data = dcc_socket.recv(1)
+		if data:
+			if data == header[state]:
+				state += 1;
+			else:
+				return False
 	
 	return True
 
 # Automata that checks the validity of the header. If nothing is received or one of the states fails, it returns
 # Returns frame payload.
 def receive_frame(dcc_socket):
+	SYNC = "\xDC\xC0\x23\xC2"
+
+	print
+	print "Receiving frame"
+
 	if(receive_header(dcc_socket)):
-		chksum = dcc_socket.recv(16)
-		length = dcc_socket.recv(16)
-		frame_id = dcc_socket.recv(8)
-		flags = dcc_socket.recv(8)
+		(chksum,) = struct.unpack(">H", dcc_socket.recv(2))
+		print "chksum:", chksum
+		(length,) = struct.unpack(">H", dcc_socket.recv(2))
+		print "length:", length
+		(frame_id,) = struct.unpack(">B", dcc_socket.recv(1))
+		print "frame_id:", frame_id
+		(flags,) = struct.unpack(">B", dcc_socket.recv(1))
+		print "flags:", flags
 
-		frame = "\xDC\xC0\x23\xC2\xDC\xC0\x23\xC2" + \
-				checksum + length + frame_id + flags
-
-		(chksum,) =struct.unpack(">H", chksum)
-		(length,) = struct.unpack(">H", length)
-		(frame_id,) = struct.unpack(">B", frame_id)
-		(flags,) = struct.unpack(">B", flags)
+		frame = SYNC + SYNC + struct.pack("H", chksum) + struct.pack(">H", length) + \
+				struct.pack(">B", frame_id) + struct.pack(">B", flags)
 
 		if length == 0 and flags == 128: # ACK
 			return None, None, frame_id, False, True
 
 		payload = dcc_socket.recv(length)
 		frame += payload
-		is_last = True if (flags == 128) else False
+		is_last = True if (flags == 64) else False
+
+		print "Received frame:" ,
+		for i in frame:
+			print ord(i),
+
+		print "Checksum:", checksum(frame)
 		if not checksum(frame): # Valid Frame
-			return frame, chksum, frame_id, is_last, False
+			print "Frame is valid"
+			return payload, chksum, frame_id, is_last, False
 
 	return None, None, None, None, None
 
@@ -141,12 +162,14 @@ output_file = open(sys.argv[4], "wb")
 max_payload_length = (2 ** 16) - 1
 
 is_last_send = False
-is_last_rcv  = False
+is_last_rcv  = True  # Maybe the other side has nothing to send
 last_send_id = 1
 cur_send_id  = 0
 waiting_ack  = False
 last_rcv_id  = 1
 last_chksum  = 0
+end_send     = False
+end_rcv      = False
 
 # send = [cur_frame_id, cur_frame, waiting_ack]
 # receive = [last_frame_id, last_chksum]
@@ -172,6 +195,7 @@ try:
 			# Current ID has been updated since last sent frame
 			if last_send_id != cur_send_id:
 				cur_frame, is_last_send = create_frame(input_file, max_payload_length, cur_send_id, False)
+				if is_last_send: end_send = True
 				last_send_id = cur_send_id
 
 			send_frame(dcc_socket, cur_frame)
@@ -181,6 +205,7 @@ try:
 		
 		# Check buffer for data
 		payload, chksum, frame_id, is_last_rcv, is_ack = receive_frame(dcc_socket)
+		if is_last_rcv: end_rcv = True
 
 		# Last sent frame reception acknowledge
 		if is_ack and frame_id == cur_send_id:
@@ -191,8 +216,10 @@ try:
 		elif not payload is None: 
 			# New frame
 			if frame_id == (last_rcv_id + 1) % 2: 
+				print "Saving payload"
 				save_payload(output_file, payload)
 
+				print "Updating registers"
 				# Update registers with the information of the received frame  
 				last_rcv_id = (last_rcv_id + 1) % 2 
 				last_chksum = chksum
@@ -206,8 +233,10 @@ try:
 				ack = create_frame(input_file, max_payload_length, last_rcv_id, True)[0]
 				send_frame(dcc_socket, ack)
 
+		print "end_rcv", end_rcv, "end_send", end_send, "waiting_ack", waiting_ack
+
 		# End of communication. ACK for last received frame was already sent.
-		if is_last_rcv and is_last_send and not waiting_ack: 
+		if end_rcv and end_send and not waiting_ack: 
 			break
 
 		if timer != -1 and (time.time() - timer) >= 1:
@@ -218,4 +247,6 @@ except socket.timeout:
 	print >> sys.stderr, "Timeout no socket do cliente"
 
 finally:
+	input_file.close()
+	output_file.close()
 	dcc_socket.close()

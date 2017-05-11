@@ -1,5 +1,6 @@
 import socket
 import struct
+import time
 
 HOST = "127.0.0.1" # Endereco IP do servidor
 PORT = 51515 # Porta na qual o servidor vai escutar
@@ -12,6 +13,8 @@ server_socket.listen(1) # Espera por apenas uma conexao antes de recusar outros 
 while True:
 	client_socket, client_address = server_socket.accept() # Fica travado no accept ate receber uma nova conexao
 
-	print client_socket.recv(1).decode()
+	print client_socket.recv(3)
+
+#	print "end of loop"
 
 	client_socket.close
