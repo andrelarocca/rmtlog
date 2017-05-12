@@ -10,139 +10,34 @@
 #             2013007803                  #
 ###########################################
 
+# PARA EXECUTAR
+# Socket com abertura passiva: python dcc023c2.py -s <PORT> <INPUT> <OUTPUT>
+# Socket com abertura ativa: python dcc023c2.py -c <IP>:<PORT> <INPUT> <OUTPUT>
+#
+# Para executarmos o script diretamente(assim como em C):
+# chmod +x ./dcc023c2
+# ./dcc023c2 argc[]
+
 """ TODO
  - Separar em main e lib dccnet
  - Talvez tenhamos que fazer loop para receber em receive_frame
  - Detectar fechamento de socket
+ - receive nao pode ser blocante senao o socket pode ficar travado em rcv ate o timeout
 """
 
 """ DUVIDAS
- - Socket passivo tem que morrer ou continua esperando novas conexoes? SIM
+ - Socket passivo tem que morrer ou continua esperando novas conexoes? MORRER
  - Checar se socket.rcv(0) buga - NAO BUGA, retorna ""
+ - Checksum e realizado com ou sem os packs?
 """
 
 import sys
 import socket
-import struct
 import time
-
-def carry_around_add(a, b):
-	c = a + b
-	return(c &0xffff)+(c >>16)
-
-def checksum(msg):
-	if len(msg) & 1:
-		msg += "\x00"
-	s = 0
-	for i in range(0, len(msg),2):
-		w = ord(msg[i])+(ord(msg[i+1])<<8)
-		s = carry_around_add(s, w)
-	return~s &0xffff
-
-
-def create_frame(input_file, max_payload_length, frame_id, is_ack):
-	print "Creating frame", frame_id, ". Is it ack?", is_ack
-
-	SYNC = "\xDC\xC0\x23\xC2"
-	payload = ""
-	payload_length = 0
-	is_last = False
-	flags = 128  # ACK flag
-
-	if not is_ack:
-		payload = input_file.read(max_payload_length)
-		payload_length = len(payload)
-		is_last = True if (payload_length < max_payload_length) else False
-		flags = 64 if is_last else 0 
-
-	payload_length = struct.pack(">H", payload_length)
-	frame_id = struct.pack(">B", frame_id)
-	flags = struct.pack(">B", flags)
-
-	frame = SYNC + SYNC + "\x00\x00" + payload_length + \
-			frame_id + flags + payload
-
-	print "Created frame without checksum:" ,
-	for i in frame:
-		print ord(i),
-
-	print "Checksum:", checksum(frame)
-
-	chksum = struct.pack(">H", checksum(frame))
-
-	frame = SYNC + SYNC + chksum + payload_length + \
-			frame_id + flags + payload
-
-	print "Created frame with checksum:   " ,
-	for i in frame:
-		print ord(i),
-	print
-
-	return frame, is_last
-
-# Send frame through the network. Exists only as a way to standardize code.
-def send_frame(dcc_socket, frame):
-	dcc_socket.sendall(frame)
-
-def receive_header(dcc_socket):
-	header = "\xDC\xC0\x23\xC2\xDC\xC0\x23\xC2"
-	state  = 0
-
-	while state < 8:
-		data = dcc_socket.recv(1)
-		if data:
-			if data == header[state]:
-				state += 1;
-			else:
-				return False
-	
-	return True
-
-# Automata that checks the validity of the header. If nothing is received or one of the states fails, it returns
-# Returns frame payload.
-def receive_frame(dcc_socket):
-	SYNC = "\xDC\xC0\x23\xC2"
-
-	print
-	print "Receiving frame"
-
-	if(receive_header(dcc_socket)):
-		(chksum,) = struct.unpack(">H", dcc_socket.recv(2))
-		print "chksum:", chksum
-		(length,) = struct.unpack(">H", dcc_socket.recv(2))
-		print "length:", length
-		(frame_id,) = struct.unpack(">B", dcc_socket.recv(1))
-		print "frame_id:", frame_id
-		(flags,) = struct.unpack(">B", dcc_socket.recv(1))
-		print "flags:", flags
-
-		frame = SYNC + SYNC + struct.pack("H", chksum) + struct.pack(">H", length) + \
-				struct.pack(">B", frame_id) + struct.pack(">B", flags)
-
-		if length == 0 and flags == 128: # ACK
-			return None, None, frame_id, False, True
-
-		payload = dcc_socket.recv(length)
-		frame += payload
-		is_last = True if (flags == 64) else False
-
-		print "Received frame:" ,
-		for i in frame:
-			print ord(i),
-
-		print "Checksum:", checksum(frame)
-		if not checksum(frame): # Valid Frame
-			print "Frame is valid"
-			return payload, chksum, frame_id, is_last, False
-
-	return None, None, None, None, None
-
-# Saves payload from received frame to the output file. Exists only as a way to standardize code.
-def save_payload(output_file, payload):
-	output_file.write(payload)
+import data_link_utils
 
 MODE = sys.argv[1]
-HOST = (sys.argv[2].split(":"))[0] if (MODE == "-c") else "127.0.0.1" #socket.gethostbyname(socket.getfqdn()) 
+HOST = (sys.argv[2].split(":"))[0] if (MODE == "-c") else socket.gethostbyname(socket.getfqdn()) 
 PORT = int((sys.argv[2].split(":"))[1]) if (MODE == "-c") else int(sys.argv[2])
 ADDR = (HOST, PORT)
 
@@ -150,11 +45,11 @@ dcc_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 
 if MODE == "-c":
 	dcc_socket.connect(ADDR)
-
 else:
+	dcc_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1) # Prevents "Address already in use" error
 	dcc_socket.bind(ADDR)
 	dcc_socket.listen(1)
-	dcc_socket, client_address = dcc_socket.accept()
+	dcc_socket = dcc_socket.accept()[0]
 
 input_file  = open(sys.argv[3], "rb")
 output_file = open(sys.argv[4], "wb")
@@ -175,8 +70,9 @@ end_rcv      = False
 # receive = [last_frame_id, last_chksum]
 
 try:
+	dcc_socket.settimeout(10)
 	# cria frame
-	# salva frame em send
+	# guarda frame em cur_frame
 	# envia frame
 	# troca waiting_ack para True
 	# comeca timer de um segundo
@@ -192,19 +88,18 @@ try:
 	while True:
 		# There is still data to send
 		if not is_last_send and not waiting_ack:
-			# Current ID has been updated since last sent frame
+			# Current ID has been updated since last sent frame(ACK for that frame was received)
 			if last_send_id != cur_send_id:
-				cur_frame, is_last_send = create_frame(input_file, max_payload_length, cur_send_id, False)
+				cur_frame, is_last_send = data_link_utils.create_frame(input_file, max_payload_length, cur_send_id, False)
 				if is_last_send: end_send = True
 				last_send_id = cur_send_id
 
-			send_frame(dcc_socket, cur_frame)
+			data_link_utils.send_frame(dcc_socket, cur_frame)
 			waiting_ack = True
 
 			timer = time.time()
-		
 		# Check buffer for data
-		payload, chksum, frame_id, is_last_rcv, is_ack = receive_frame(dcc_socket)
+		payload, chksum, frame_id, is_last_rcv, is_ack = data_link_utils.receive_frame(dcc_socket)
 		if is_last_rcv: end_rcv = True
 
 		# Last sent frame reception acknowledge
@@ -216,24 +111,23 @@ try:
 		elif not payload is None: 
 			# New frame
 			if frame_id == (last_rcv_id + 1) % 2: 
-				print "Saving payload"
-				save_payload(output_file, payload)
+				data_link_utils.save_payload(output_file, payload)
 
-				print "Updating registers"
 				# Update registers with the information of the received frame  
 				last_rcv_id = (last_rcv_id + 1) % 2 
 				last_chksum = chksum
 
 				# Create and send acknowledge message for the received frame
-				ack = create_frame(input_file, max_payload_length, last_rcv_id, True)[0]
-				send_frame(dcc_socket, ack)
+				ack = data_link_utils.create_frame(input_file, max_payload_length, last_rcv_id, True)[0]
+				data_link_utils.send_frame(dcc_socket, ack)
 			# Frame is a retransmission
 			elif frame_id == last_rcv_id and chksum == last_chksum: 
 				# Resend ack
-				ack = create_frame(input_file, max_payload_length, last_rcv_id, True)[0]
-				send_frame(dcc_socket, ack)
+				ack = data_link_utils.create_frame(input_file, max_payload_length, last_rcv_id, True)[0]
+				data_link_utils.send_frame(dcc_socket, ack)
 
-		print "end_rcv", end_rcv, "end_send", end_send, "waiting_ack", waiting_ack
+#		print "end_rcv", end_rcv, "end_send", end_send, "waiting_ack", waiting_ack
+#		print
 
 		# End of communication. ACK for last received frame was already sent.
 		if end_rcv and end_send and not waiting_ack: 
