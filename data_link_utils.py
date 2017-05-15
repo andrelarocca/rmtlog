@@ -95,7 +95,7 @@ def receive_frame(dcc_socket):
 				print "ACK FRAME [id = %d]\n" %frame_id
 				return None, chksum, frame_id, False, True
 			else:
-				print "ACK checksum fail"
+				print "ACK checksum fail\n"
 				return None, None, None, None, None
 
 		payload = dcc_socket.recv(length)
@@ -108,7 +108,7 @@ def receive_frame(dcc_socket):
 				print "DATA FRAME [id = %d][length = %d]\n" %(frame_id, length)
 				return payload, chksum, frame_id, is_last, False
 			else:
-				print "Data frame checksum fail"
+				print "Data frame checksum fail\n"
 				return None, None, None, None, None	
 
 	print "Invalid header"

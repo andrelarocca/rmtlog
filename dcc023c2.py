@@ -28,7 +28,7 @@ import time
 import data_link_utils
 
 MODE = sys.argv[1]  # Passive or active socket
-HOST = (sys.argv[2].split(":"))[0] if (MODE == "-c") else socket.gethostbyname(socket.getfqdn()) 
+HOST = (sys.argv[2].split(":"))[0] if (MODE == "-c") else "127.0.0.1" #socket.gethostbyname(socket.getfqdn()) 
 PORT = int((sys.argv[2].split(":"))[1]) if (MODE == "-c") else int(sys.argv[2])
 ADDR = (HOST, PORT)
 
@@ -57,9 +57,9 @@ last_chksum  = 0     # chksum from last frame
 end_send     = False # If the last frame was already sent, save it to mark the end of data transmission
 end_rcv      = False # If the last frame was already received, save it to mark the end of data reception
 
-try:
-	dcc_socket.settimeout(10) # Socket timeout 10s: Needs to be swapped to non-blocking sockets later
-	while True:
+dcc_socket.settimeout(1) # Socket timeout 1s
+while True:
+	try:
 		if not is_last_send and not waiting_ack:  # There is still data to send
 			if last_send_id != cur_send_id:  # Last frame was confirmed with ACK
 				# Create next frame with data from the input file
@@ -107,10 +107,12 @@ try:
 			waiting_ack = False  # Retransmit ack
 			timer = -1  # Reset timer
 
-except socket.timeout:
-	print >> sys.stderr, "Timeout no socket do cliente"
+	except socket.timeout:  # 1 second has been passed in the blocking receive. If is waiting for ack, retransmit last frame.
+		if waiting_ack:
+			print "Timeout. Retransmiting frame\n"
+			data_link_utils.send_frame(dcc_socket, cur_frame)
+			timer = time.time()  # Reset timer
 
-finally:
-	input_file.close()
-	output_file.close()
-	dcc_socket.close()
+input_file.close()
+output_file.close()
+dcc_socket.close()
