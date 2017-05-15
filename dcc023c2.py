@@ -18,10 +18,6 @@
 # chmod +x ./dcc023c2
 # ./dcc023c2 <ARGS>
 
-""" TODO
- - receive nao pode ser blocante senao o socket pode ficar travado sem receber nada ate o timeout
-"""
-
 import sys
 import socket
 import time
